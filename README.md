@@ -50,8 +50,3 @@ Cloudflare Workers 项目：提供 GitHub Star 校验的“邀请码领取”页
 - `GET /` 领取邀请码 + 状态面板
 - `POST /api/claim` 领取邀请码（用户名 + Star 校验）
 - `GET /api/health-check` 返回状态 JSON
-
-## 安全与隐私
-- 不要提交 `.dev.vars`、密钥或数据库导出文件
-- 本仓库已移除个人变量与本地 SQL 导出，`postgressql/` 已被忽略
-- 如果曾经提交过密钥，请立即轮换
