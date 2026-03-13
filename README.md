@@ -1,4 +1,4 @@
-﻿# bigbird
+﻿# Cloudflare-StarGate
 
 Cloudflare Workers 项目：提供 GitHub Star 校验的“邀请码领取”页面 + 运行状态监控面板。
 
