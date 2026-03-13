@@ -1,4 +1,4 @@
-﻿# Cloudflare-StarGate
+﻿# bigbird
 
 Cloudflare Workers 项目：提供 GitHub Star 校验的“邀请码领取”页面 + 运行状态监控面板。
 
@@ -26,6 +26,8 @@ Cloudflare Workers 项目：提供 GitHub Star 校验的“邀请码领取”页
    - `API_URL`
    - `GITHUB_REPO_OWNER` / `GITHUB_REPO_NAME`
    - `MONITORED_SITES_JSON`（JSON 字符串数组）
+   - 可选：`TIP_JAR_ENABLED` / `TIP_JAR_IMG_1` / `TIP_JAR_IMG_2` / `SITE_FAVICON_URL`
+   - `ADMIN_PASSWORD`（后台入口用，务必修改）
 
 ## 配置说明
 - `API_TOKEN`（密钥）：后端接口鉴权用的 Bearer Token
@@ -35,6 +37,7 @@ Cloudflare Workers 项目：提供 GitHub Star 校验的“邀请码领取”页
 - `MONITORED_SITES_JSON`：站点列表，支持 `$API_URL` 占位
 - `TIP_JAR_ENABLED` / `TIP_JAR_IMG_1` / `TIP_JAR_IMG_2`：赞赏面板（可选）
 - `SITE_FAVICON_URL`：页面 favicon（可选）
+- `ADMIN_PASSWORD`：后台入口密码（务必修改）
 
 `MONITORED_SITES_JSON` 示例：
 ```
@@ -50,3 +53,8 @@ Cloudflare Workers 项目：提供 GitHub Star 校验的“邀请码领取”页
 - `GET /` 领取邀请码 + 状态面板
 - `POST /api/claim` 领取邀请码（用户名 + Star 校验）
 - `GET /api/health-check` 返回状态 JSON
+
+## 安全与隐私
+- 不要提交 `.dev.vars`、密钥或数据库导出文件
+- `wrangler.toml` 中不要存放真实密钥（使用 `wrangler secret` 或 `.dev.vars`）
+- 如果曾经提交过密钥，请立即轮换

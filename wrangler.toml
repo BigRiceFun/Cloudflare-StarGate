@@ -1,39 +1,50 @@
-﻿name = "Cloudflare-StarGate"
+﻿name = "bigbird"
 main = "src/index.js"
 compatibility_date = "2025-12-01"
 routes = [
-  { pattern = "status.example.com", zone_name = "example.com", custom_domain = true }
+  { pattern = "your.example.com", zone_name = "example.com", custom_domain = true }
 ]
 workers_dev = false
 preview_urls = false
 
-# KV namespaces (fill IDs after running):
+# KV Namespaces - fill IDs after running:
 #   npx wrangler kv namespace create INVITE_KV
 #   npx wrangler kv namespace create STATUS_KV
 [[kv_namespaces]]
 binding = "INVITE_KV"
-id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+id = "REPLACE_WITH_INVITE_KV_ID"
 
 [[kv_namespaces]]
 binding = "STATUS_KV"
-id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+id = "REPLACE_WITH_STATUS_KV_ID"
 
 # Secrets / Vars:
-# Required secrets (set via `wrangler secret put` or `.dev.vars` for local dev):
+# REQUIRED:
 #   API_TOKEN
-# Optional secrets:
-#   GITHUB_API_TOKEN  (GitHub PAT to avoid rate limits)
+#     - What: Bearer token used by API_URL
+#     - Used for: POST /api/v1/admin/redeem-codes/generate
+#
+# OPTIONAL (strongly recommended):
+#   GITHUB_API_TOKEN
+#     - What: GitHub Personal Access Token (PAT) for GitHub public API requests
+#     - Why: Avoid https://api.github.com/users/{username}/starred rate limits
+#
 # Local dev tip:
-#   Put secrets into `.dev.vars` (gitignored) instead of committing them.
+#   Put secrets into `.dev.vars` (already gitignored) instead of committing them anywhere.
+#   Example:
+#     API_TOKEN=...
+#     GITHUB_API_TOKEN=...
 
 [vars]
-API_URL = "https://example.com/api/v1/admin/redeem-codes/generate"
+API_URL = "https://api.example.com/api/v1/admin/redeem-codes/generate"
 GITHUB_REPO_OWNER = "your-org"
 GITHUB_REPO_NAME = "your-repo"
 TIP_JAR_ENABLED = "false"
-TIP_JAR_IMG_1 = "https://example.com/tip-1.png"
+TIP_JAR_IMG_1 = "https://example.com/tip-1.jpg"
 TIP_JAR_IMG_2 = "https://example.com/tip-2.png"
 SITE_FAVICON_URL = "https://example.com/favicon.png"
+ADMIN_PASSWORD = "change_me"
+SPONSOR_QQ_LIST_JSON = "[]"
 # JSON array string. Example:
 #   [{"name":"Site A","url":"https://example.com"},{"name":"Backend","url":"$API_URL"}]
 MONITORED_SITES_JSON = '[{"name":"Backend API","url":"$API_URL"},{"name":"GitHub API","url":"https://api.github.com"}]'

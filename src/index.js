@@ -1,5 +1,6 @@
 ﻿const INVITE_KV_KEY_PREFIX = "github:";
 const STATUS_KV_KEY = "status:results";
+const ADMIN_SETTINGS_KV_KEY = "admin:settings";
 
 const DEFAULT_MONITORED_SITES = [
   { name: "Backend API", url: "$API_URL" },
@@ -30,21 +31,31 @@ async function route(request, env, _ctx) {
   const url = new URL(request.url);
   const path = url.pathname;
 
-  if (path === "/") return handleHome(env);
+  if (path === "/") return await handleHome(env);
+  if (path === "/admin") return await handleAdminPage(env);
   if (path === "/api/claim") return handleClaim(request, env);
   if (path === "/api/health-check") return handleHealthCheck(request, env);
+  if (path === "/api/admin/login") return handleAdminLogin(request, env);
+  if (path === "/api/admin/settings") return handleAdminSettings(request, env);
 
   return new Response("Not Found", { status: 404 });
 }
 
-function handleHome(env) {
+async function handleHome(env) {
   const repoOwner = env.GITHUB_REPO_OWNER ?? "";
   const repoName = env.GITHUB_REPO_NAME ?? "";
   const repoDisplay = repoOwner && repoName ? `${repoOwner}/${repoName}` : "";
-  const tipEnabled = normalizeBool(env.TIP_JAR_ENABLED, true);
-  const tipImg1 = env.TIP_JAR_IMG_1 ?? "";
-  const tipImg2 = env.TIP_JAR_IMG_2 ?? "";
+  const settings = await getResolvedSettings(env);
+  const tipEnabled = settings.tip_enabled;
+  const tipImg1 = settings.tip_img_1;
+  const tipImg2 = settings.tip_img_2;
+  const sponsors = settings.sponsors;
   const faviconUrl = env.SITE_FAVICON_URL ?? "";
+  const footerYear = new Date().getFullYear();
+  const sponsorsJson = JSON.stringify(sponsors)
+    .replaceAll("&", "\\u0026")
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e");
 
   const page = `<!doctype html>
 <html lang="zh-CN">
@@ -234,6 +245,109 @@ function handleHome(env) {
         gap: 12px;
         border: 1px solid #e2e8f0;
       }
+      .sponsor-board {
+        margin-top: 18px;
+        padding: 16px;
+      }
+      .sponsor-list {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .sponsor-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        background: #fbfdff;
+      }
+      .sponsor-item img {
+        width: 52px;
+        height: 52px;
+        border-radius: 999px;
+        border: 1px solid #e2e8f0;
+      }
+      @media (max-width: 680px) {
+        .sponsor-list { grid-template-columns: 1fr; }
+      }
+      .footer {
+        margin-top: 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+      }
+      .footer-brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        text-decoration: none;
+        color: inherit;
+        cursor: pointer;
+      }
+      .footer-logo {
+        width: 24px;
+        height: 24px;
+        border-radius: 999px;
+        border: 1px solid #e2e8f0;
+      }
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.35);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 50;
+        padding: 14px;
+      }
+      .overlay.open { display: flex; }
+      .modal {
+        width: min(760px, 96vw);
+        max-height: 90vh;
+        overflow: auto;
+        background: #fff;
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+        padding: 16px;
+      }
+      .modal h3 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+      .admin-section {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+        margin-top: 10px;
+      }
+      .list-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 0;
+      }
+      .list-meta {
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-all;
+      }
+      .danger { background: #fff; color: #991b1b; border-color: #fecaca; }
+      .switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+      }
     </style>
   </head>
   <body>
@@ -293,6 +407,32 @@ function handleHome(env) {
       </div>
 
       <div class="grid" id="grid"></div>
+
+      <div class="card sponsor-board">
+        <div class="service-name">特别鸣谢</div>
+        <div class="muted">感谢每一位支持者</div>
+        <div class="sponsor-list" id="sponsorList"></div>
+      </div>
+
+      <div class="footer">
+        <div>© ${footerYear} 鸣谢 GitHub Cloudflare</div>
+        <a class="footer-brand" id="adminLogoTrigger" href="${escapeHtml(faviconUrl || '#')}" target="_blank" rel="noreferrer noopener">
+          ${faviconUrl ? `<img class="footer-logo" src="${escapeHtml(faviconUrl)}" alt="logo" />` : ""}
+          <span>BigBrid</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="overlay" id="loginOverlay" aria-hidden="true">
+      <div class="modal">
+        <h3>Admin Login</h3>
+        <div class="row">
+          <input class="input" id="adminPasswordInput" type="password" placeholder="Enter admin password" />
+          <button class="btn" id="adminLoginBtn" type="button">Login</button>
+          <button class="btn secondary" id="adminLoginCancelBtn" type="button">Cancel</button>
+        </div>
+        <div class="muted" id="adminLoginMsg"></div>
+      </div>
     </div>
 
     <script>
@@ -302,6 +442,17 @@ function handleHome(env) {
       const inviteCard = document.getElementById('inviteCard');
       const inviteCode = document.getElementById('inviteCode');
       const copyBtn = document.getElementById('copyBtn');
+      const sponsorListEl = document.getElementById('sponsorList');
+      const loginOverlay = document.getElementById('loginOverlay');
+      const adminLogoTrigger = document.getElementById('adminLogoTrigger');
+      const adminPasswordInput = document.getElementById('adminPasswordInput');
+      const adminLoginBtn = document.getElementById('adminLoginBtn');
+      const adminLoginCancelBtn = document.getElementById('adminLoginCancelBtn');
+      const adminLoginMsg = document.getElementById('adminLoginMsg');
+      const PASS_KEY = 'bigbird_admin_password';
+      let logoTapCount = 0;
+      let logoTapTimer = null;
+      let publicSponsors = ${sponsorsJson};
 
       function escapeHtml(str) {
         return String(str).replace(/[&<>"']/g, (c) => ({
@@ -313,6 +464,32 @@ function handleHome(env) {
         if (!claimMsg) return;
         claimMsg.className = kind === 'ok' ? 'ok' : (kind === 'err' ? 'err' : 'muted');
         claimMsg.textContent = text || '';
+      }
+
+      function setLoginMessage(msg, isError) {
+        if (!adminLoginMsg) return;
+        adminLoginMsg.textContent = msg || '';
+        adminLoginMsg.style.color = isError ? '#991b1b' : '';
+      }
+
+      function qqAvatar(qq) {
+        return 'http://q1.qlogo.cn/g?b=qq&nk=' + encodeURIComponent(qq) + '&s=100';
+      }
+
+      function renderSponsors(list) {
+        const items = Array.isArray(list) ? list : [];
+        if (!sponsorListEl) return;
+        if (!items.length) {
+          sponsorListEl.innerHTML = '<div class="muted">暂无赞助成员</div>';
+          return;
+        }
+        sponsorListEl.innerHTML = items.map((item) => {
+          const qq = escapeHtml(String(item.qq || ''));
+          const nickname = escapeHtml(String(item.nickname || '匿名赞助者'));
+          const avatar = escapeHtml(String(item.avatar || qqAvatar(qq)));
+          return '<div class="sponsor-item"><img src="' + avatar + '" alt="' + nickname + '" /><div>' +
+            '<div>' + nickname + '</div></div></div>';
+        }).join('');
       }
 
       async function copy(text) {
@@ -332,7 +509,7 @@ function handleHome(env) {
         const text = (inviteCode && inviteCode.textContent) || '';
         await copy(text);
         copyBtn.textContent = '已复制';
-        setTimeout(() => (copyBtn.textContent = '复制'), 900);
+        setTimeout(() => (copyBtn.textContent = '??'), 900);
       });
 
       async function claim() {
@@ -369,6 +546,57 @@ function handleHome(env) {
       }
 
       claimBtn && claimBtn.addEventListener('click', claim);
+
+      async function loginAdmin() {
+        const password = (adminPasswordInput && adminPasswordInput.value || '').trim();
+        if (!password) {
+          setLoginMessage('请输入密码', true);
+          return;
+        }
+        adminLoginBtn && (adminLoginBtn.disabled = true);
+        setLoginMessage('登录中...', false);
+        try {
+          const res = await fetch('/api/admin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) {
+            setLoginMessage(data && data.message ? data.message : '登录失败', true);
+            return;
+          }
+          localStorage.setItem(PASS_KEY, password);
+          window.location.href = '/admin';
+        } catch (e) {
+          setLoginMessage(e && e.message ? e.message : String(e), true);
+        } finally {
+          adminLoginBtn && (adminLoginBtn.disabled = false);
+        }
+      }
+
+      function onLogoClick(e) {
+        e.preventDefault();
+        logoTapCount += 1;
+        if (logoTapTimer) clearTimeout(logoTapTimer);
+        logoTapTimer = setTimeout(() => { logoTapCount = 0; }, 1000);
+        if (logoTapCount >= 3) {
+          logoTapCount = 0;
+          loginOverlay && loginOverlay.classList.add('open');
+          adminPasswordInput && adminPasswordInput.focus();
+          setLoginMessage('', false);
+        }
+      }
+
+      renderSponsors(publicSponsors);
+      adminLogoTrigger && adminLogoTrigger.addEventListener('click', onLogoClick);
+      adminLoginBtn && adminLoginBtn.addEventListener('click', loginAdmin);
+      adminPasswordInput && adminPasswordInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') loginAdmin();
+      });
+      adminLoginCancelBtn && adminLoginCancelBtn.addEventListener('click', () => {
+        loginOverlay && loginOverlay.classList.remove('open');
+      });
 
       const lastCheckedEl = document.getElementById('lastChecked');
       const gridEl = document.getElementById('grid');
@@ -544,6 +772,393 @@ function handleHome(env) {
 
       refreshBtn && refreshBtn.addEventListener('click', () => loadStatus(true));
       loadStatus(false);
+    </script>
+  </body>
+</html>`;
+
+  return html(page, 200, { "Cache-Control": "no-store" });
+}
+
+async function handleAdminPage(env) {
+  const faviconUrl = env.SITE_FAVICON_URL ?? "";
+  const page = `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    ${faviconUrl ? `<link rel="icon" href="${escapeHtml(faviconUrl)}" />` : ""}
+    <title>管理后台</title>
+    <style>
+      :root {
+        --bg: #f7f8fb;
+        --card: #ffffff;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #e2e8f0;
+        --shadow: 0 12px 36px rgba(15, 23, 42, 0.12);
+        --accent: #2563eb;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Sora", "Space Grotesk", "DM Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(1200px 520px at 20% -10%, rgba(37, 99, 235, 0.08), transparent 60%),
+          radial-gradient(900px 500px at 120% 10%, rgba(16, 185, 129, 0.08), transparent 60%),
+          linear-gradient(180deg, #f8fafc 0%, #f7f8fb 35%, #ffffff 100%);
+      }
+      .page { max-width: 1240px; margin: 0 auto; padding: 24px 18px 36px; }
+      .head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: linear-gradient(120deg, #ffffff 0%, #f7fbff 100%);
+        box-shadow: var(--shadow);
+        padding: 16px 18px;
+      }
+      .title { font-size: 24px; font-weight: 800; }
+      .muted { color: var(--muted); font-size: 13px; }
+      .btn {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--text);
+        color: #fff;
+        padding: 10px 14px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: transform 150ms ease, box-shadow 150ms ease;
+      }
+      .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(15, 23, 42, 0.12); }
+      .btn.secondary { background: #fff; color: var(--text); }
+      .btn.danger { background: #fff; color: #991b1b; border-color: #fecaca; }
+      .grid { margin-top: 16px; display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+        padding: 16px;
+      }
+      .card-title { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .input {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 13px;
+        min-width: 200px;
+        flex: 1;
+        transition: border-color 150ms ease, box-shadow 150ms ease;
+      }
+      .input:focus {
+        outline: none;
+        border-color: #93c5fd;
+        box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.28);
+      }
+      .list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+      .item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px;
+        background: #f8fbff;
+      }
+      .sponsor { display: flex; align-items: center; gap: 10px; }
+      .sponsor img { width: 44px; height: 44px; border-radius: 999px; border: 1px solid var(--border); }
+      .msg { min-height: 20px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+      .login-wrap {
+        position: fixed;
+        inset: 0;
+        display: none;
+        background: rgba(15, 23, 42, 0.35);
+        align-items: center;
+        justify-content: center;
+        z-index: 10;
+      }
+      .login-wrap.open { display: flex; }
+      .login-card {
+        width: min(460px, 96vw);
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+        padding: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="head">
+        <div>
+          <div class="title">管理后台</div>
+          <div class="muted">统一管理监控网站、赞赏设置、赞助榜成员</div>
+        </div>
+        <div class="row">
+          <a class="btn secondary" href="/">返回首页</a>
+          <button class="btn secondary" id="logoutBtn" type="button">退出登录</button>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <div class="card-title">监控网站</div>
+          <div class="list" id="siteList"></div>
+          <div class="row" style="margin-top:10px;">
+            <input class="input" id="siteNameInput" placeholder="网站名称" />
+            <input class="input" id="siteUrlInput" placeholder="网站 URL" />
+            <button class="btn secondary" id="addSiteBtn" type="button">添加</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">赞赏设置</div>
+          <label class="row" style="margin: 0 0 10px;">
+            <input id="tipEnabledInput" type="checkbox" />
+            <span>开启赞赏</span>
+          </label>
+          <div class="row">
+            <input class="input" id="tipImg1Input" placeholder="赞赏图片 URL 1" />
+            <input class="input" id="tipImg2Input" placeholder="赞赏图片 URL 2" />
+          </div>
+        </div>
+
+        <div class="card" style="grid-column: 1 / -1;">
+          <div class="card-title">赞助榜成员（QQ）</div>
+          <div class="list" id="sponsorList"></div>
+          <div class="row" style="margin-top:10px;">
+            <input class="input" id="sponsorQqInput" placeholder="QQ 号" />
+            <input class="input" id="sponsorNicknameInput" placeholder="昵称（可选，不填自动拉取）" />
+            <button class="btn secondary" id="addSponsorBtn" type="button">添加</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:16px;">
+        <button class="btn" id="saveBtn" type="button">保存全部配置</button>
+      </div>
+      <div class="msg" id="msg"></div>
+    </div>
+
+    <div class="login-wrap" id="loginWrap">
+      <div class="login-card">
+        <div class="card-title">管理员登录</div>
+        <div class="row">
+          <input class="input" id="passwordInput" type="password" placeholder="请输入管理员密码" />
+          <button class="btn" id="loginBtn" type="button">登录</button>
+        </div>
+        <div class="msg" id="loginMsg"></div>
+      </div>
+    </div>
+
+    <script>
+      const PASS_KEY = 'bigbird_admin_password';
+      const siteListEl = document.getElementById('siteList');
+      const siteNameInput = document.getElementById('siteNameInput');
+      const siteUrlInput = document.getElementById('siteUrlInput');
+      const addSiteBtn = document.getElementById('addSiteBtn');
+      const tipEnabledInput = document.getElementById('tipEnabledInput');
+      const tipImg1Input = document.getElementById('tipImg1Input');
+      const tipImg2Input = document.getElementById('tipImg2Input');
+      const sponsorListEl = document.getElementById('sponsorList');
+      const sponsorQqInput = document.getElementById('sponsorQqInput');
+      const sponsorNicknameInput = document.getElementById('sponsorNicknameInput');
+      const addSponsorBtn = document.getElementById('addSponsorBtn');
+      const saveBtn = document.getElementById('saveBtn');
+      const msgEl = document.getElementById('msg');
+      const logoutBtn = document.getElementById('logoutBtn');
+      const loginWrap = document.getElementById('loginWrap');
+      const passwordInput = document.getElementById('passwordInput');
+      const loginBtn = document.getElementById('loginBtn');
+      const loginMsg = document.getElementById('loginMsg');
+
+      let adminPassword = localStorage.getItem(PASS_KEY) || '';
+      let settings = { monitored_sites: [], tip_enabled: false, tip_img_1: '', tip_img_2: '', sponsors: [] };
+
+      function escapeHtml(str) {
+        return String(str).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',\"'\":'&#39;' }[c]));
+      }
+      function qqAvatar(qq) {
+        return 'http://q1.qlogo.cn/g?b=qq&nk=' + encodeURIComponent(qq) + '&s=100';
+      }
+      function setMsg(text, isError) {
+        msgEl.textContent = text || '';
+        msgEl.style.color = isError ? '#991b1b' : '';
+      }
+      function setLoginMsg(text, isError) {
+        loginMsg.textContent = text || '';
+        loginMsg.style.color = isError ? '#991b1b' : '';
+      }
+      function openLogin() { loginWrap.classList.add('open'); passwordInput.focus(); }
+      function closeLogin() { loginWrap.classList.remove('open'); }
+
+      async function api(url, init) {
+        const headers = Object.assign({}, (init && init.headers) || {}, {
+          'X-Admin-Password': adminPassword,
+          'Content-Type': 'application/json'
+        });
+        const res = await fetch(url, Object.assign({}, init || {}, { headers }));
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          openLogin();
+          throw new Error(data.message || '请先登录');
+        }
+        if (!res.ok) throw new Error(data.message || ('请求失败 HTTP ' + res.status));
+        return data;
+      }
+
+      function renderSites() {
+        const list = Array.isArray(settings.monitored_sites) ? settings.monitored_sites : [];
+        if (!list.length) {
+          siteListEl.innerHTML = '<div class="muted">暂无监控网站</div>';
+          return;
+        }
+        siteListEl.innerHTML = list.map((site, idx) => (
+          '<div class="item"><div><div>' + escapeHtml(site.name || site.url || '未命名网站') + '</div><div class="muted">' + escapeHtml(site.url || '') + '</div></div>' +
+          '<button class="btn danger" type="button" data-site-del="' + idx + '">删除</button></div>'
+        )).join('');
+      }
+
+      function renderSponsors() {
+        const list = Array.isArray(settings.sponsors) ? settings.sponsors : [];
+        if (!list.length) {
+          sponsorListEl.innerHTML = '<div class="muted">暂无赞助成员</div>';
+          return;
+        }
+        sponsorListEl.innerHTML = list.map((item, idx) => {
+          const qq = escapeHtml(String(item.qq || ''));
+          const nickname = escapeHtml(String(item.nickname || '匿名赞助者'));
+          const avatar = escapeHtml(String(item.avatar || qqAvatar(qq)));
+          return '<div class="item"><div class="sponsor"><img src="' + avatar + '" alt="' + nickname + '" />' +
+            '<div><div>' + nickname + '</div></div></div>' +
+            '<button class="btn danger" type="button" data-sponsor-del="' + idx + '">删除</button></div>';
+        }).join('');
+      }
+
+      function renderAll() {
+        tipEnabledInput.checked = !!settings.tip_enabled;
+        tipImg1Input.value = settings.tip_img_1 || '';
+        tipImg2Input.value = settings.tip_img_2 || '';
+        renderSites();
+        renderSponsors();
+      }
+
+      async function loadSettings() {
+        const data = await api('/api/admin/settings', { method: 'GET' });
+        settings = data.settings || settings;
+        renderAll();
+      }
+
+      async function saveSettings() {
+        settings.tip_enabled = !!tipEnabledInput.checked;
+        settings.tip_img_1 = (tipImg1Input.value || '').trim();
+        settings.tip_img_2 = (tipImg2Input.value || '').trim();
+        const data = await api('/api/admin/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            monitored_sites: settings.monitored_sites || [],
+            tip_enabled: settings.tip_enabled,
+            tip_img_1: settings.tip_img_1,
+            tip_img_2: settings.tip_img_2,
+            sponsors: settings.sponsors || []
+          })
+        });
+        settings = data.settings || settings;
+        renderAll();
+      }
+
+      loginBtn.addEventListener('click', async () => {
+        const password = (passwordInput.value || '').trim();
+        if (!password) return setLoginMsg('请输入密码', true);
+        setLoginMsg('登录中...', false);
+        loginBtn.disabled = true;
+        try {
+          const res = await fetch('/api/admin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) throw new Error(data.message || '登录失败');
+          adminPassword = password;
+          localStorage.setItem(PASS_KEY, password);
+          closeLogin();
+          setLoginMsg('', false);
+          await loadSettings();
+        } catch (e) {
+          setLoginMsg(e.message || String(e), true);
+        } finally {
+          loginBtn.disabled = false;
+        }
+      });
+      passwordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginBtn.click(); });
+
+      logoutBtn.addEventListener('click', () => {
+        localStorage.removeItem(PASS_KEY);
+        adminPassword = '';
+        window.location.href = '/';
+      });
+
+      siteListEl.addEventListener('click', (e) => {
+        const idx = Number(e.target && e.target.dataset ? e.target.dataset.siteDel : NaN);
+        if (!Number.isFinite(idx)) return;
+        settings.monitored_sites.splice(idx, 1);
+        renderSites();
+      });
+      sponsorListEl.addEventListener('click', (e) => {
+        const idx = Number(e.target && e.target.dataset ? e.target.dataset.sponsorDel : NaN);
+        if (!Number.isFinite(idx)) return;
+        settings.sponsors.splice(idx, 1);
+        renderSponsors();
+      });
+
+      addSiteBtn.addEventListener('click', () => {
+        const name = (siteNameInput.value || '').trim();
+        const url = (siteUrlInput.value || '').trim();
+        if (!url) return setMsg('网站 URL 不能为空', true);
+        settings.monitored_sites = settings.monitored_sites || [];
+        settings.monitored_sites.push({ name: name || url, url });
+        siteNameInput.value = '';
+        siteUrlInput.value = '';
+        renderSites();
+        setMsg('', false);
+      });
+
+      addSponsorBtn.addEventListener('click', () => {
+        const qq = (sponsorQqInput.value || '').trim();
+        if (!/^\\d{5,12}$/.test(qq)) return setMsg('QQ 号格式不正确', true);
+        const nickname = (sponsorNicknameInput.value || '').trim();
+        settings.sponsors = settings.sponsors || [];
+        settings.sponsors.push({ qq, nickname, avatar: qqAvatar(qq) });
+        sponsorQqInput.value = '';
+        sponsorNicknameInput.value = '';
+        renderSponsors();
+        setMsg('', false);
+      });
+
+      saveBtn.addEventListener('click', async () => {
+        saveBtn.disabled = true;
+        setMsg('保存中...', false);
+        try {
+          await saveSettings();
+          setMsg('保存成功', false);
+        } catch (e) {
+          setMsg(e.message || String(e), true);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+
+      if (!adminPassword) openLogin();
+      else loadSettings().catch((e) => setMsg(e.message || String(e), true));
     </script>
   </body>
 </html>`;
@@ -922,8 +1537,210 @@ function normalizeBool(value, defaultValue = false) {
   return defaultValue;
 }
 
-function unknownSitesPayload(env) {
-  const sites = resolveMonitoredSites(env).map((s) => ({
+function getAdminPassword(env) {
+  const raw = typeof env.ADMIN_PASSWORD === "string" ? env.ADMIN_PASSWORD.trim() : "";
+  return raw || "123456";
+}
+
+function makeQqAvatarUrl(qq) {
+  return `http://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(qq)}&s=100`;
+}
+
+function sanitizeMonitoredSites(list, apiUrl = "") {
+  const inList = Array.isArray(list) ? list : [];
+  const seen = new Set();
+  const out = [];
+  for (const item of inList) {
+    let url = typeof item?.url === "string" ? item.url.trim() : "";
+    if (!url) continue;
+    if (url === "$API_URL" || url === "__API_URL__") url = apiUrl;
+    if (!url) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      name: typeof item?.name === "string" && item.name.trim() ? item.name.trim() : url,
+      url,
+    });
+  }
+  return out;
+}
+
+function sanitizeSponsors(list) {
+  const inList = Array.isArray(list) ? list : [];
+  const seen = new Set();
+  const out = [];
+  for (const item of inList) {
+    const qqRaw = typeof item === "string" ? item : item?.qq;
+    const qq = typeof qqRaw === "string" ? qqRaw.trim() : "";
+    if (!/^\d{5,12}$/.test(qq)) continue;
+    if (seen.has(qq)) continue;
+    seen.add(qq);
+    const nicknameRaw = typeof item === "string" ? "" : item?.nickname;
+    const avatarRaw = typeof item === "string" ? "" : item?.avatar;
+    out.push({
+      qq,
+      nickname: typeof nicknameRaw === "string" ? nicknameRaw.trim() : "",
+      avatar: typeof avatarRaw === "string" && avatarRaw.trim() ? avatarRaw.trim() : makeQqAvatarUrl(qq),
+    });
+  }
+  return out;
+}
+
+function parseSponsorsFromEnv(env) {
+  const raw =
+    typeof env.SPONSOR_QQ_LIST_JSON === "string" && env.SPONSOR_QQ_LIST_JSON.trim()
+      ? env.SPONSOR_QQ_LIST_JSON.trim()
+      : typeof env.SPONSOR_BOARD_JSON === "string"
+        ? env.SPONSOR_BOARD_JSON.trim()
+        : "";
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return sanitizeSponsors(parsed);
+  } catch {
+    return [];
+  }
+}
+
+function parseQqPortraitMap(text) {
+  if (typeof text !== "string" || !text.trim()) return {};
+  const m = text.match(/\(([\s\S]+)\)\s*;?\s*$/);
+  if (!m?.[1]) return {};
+  try {
+    const obj = Function(`"use strict"; return (${m[1]});`)();
+    if (!obj || typeof obj !== "object") return {};
+    const out = {};
+    for (const [qq, val] of Object.entries(obj)) {
+      if (!/^\d{5,12}$/.test(qq)) continue;
+      const arr = Array.isArray(val) ? val : [];
+      // qq portrait payload usually stores nickname at index 6.
+      const nickname = typeof arr[6] === "string" ? arr[6].trim() : "";
+      out[qq] = nickname;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function fetchQqNicknames(qqList) {
+  const ids = Array.from(new Set((Array.isArray(qqList) ? qqList : []).filter((x) => /^\d{5,12}$/.test(x))));
+  if (!ids.length) return {};
+  const url = `http://users.qzone.qq.com/fcg-bin/cgi_get_portrait.fcg?uins=${encodeURIComponent(ids.join(","))}`;
+  try {
+    const res = await fetch(url, { method: "GET" });
+    if (!res.ok) return {};
+    const text = await res.text();
+    return parseQqPortraitMap(text);
+  } catch {
+    return {};
+  }
+}
+
+async function enrichSponsorsWithQqProfile(list) {
+  const sponsors = sanitizeSponsors(list);
+  if (!sponsors.length) return [];
+  const nicknameMap = await fetchQqNicknames(sponsors.map((s) => s.qq));
+  return sponsors.map((item) => {
+    const qq = item.qq;
+    const nickname = item.nickname || nicknameMap[qq] || "匿名赞助者";
+    return {
+      qq,
+      nickname,
+      avatar: makeQqAvatarUrl(qq),
+    };
+  });
+}
+
+function buildDefaultSettings(env) {
+  return {
+    monitored_sites: parseMonitoredSitesRaw(env),
+    tip_enabled: normalizeBool(env.TIP_JAR_ENABLED, true),
+    tip_img_1: typeof env.TIP_JAR_IMG_1 === "string" ? env.TIP_JAR_IMG_1 : "",
+    tip_img_2: typeof env.TIP_JAR_IMG_2 === "string" ? env.TIP_JAR_IMG_2 : "",
+    sponsors: parseSponsorsFromEnv(env),
+  };
+}
+
+function sanitizeSettings(raw, env, fallback = buildDefaultSettings(env)) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const tipEnabled =
+    typeof src.tip_enabled === "boolean"
+      ? src.tip_enabled
+      : normalizeBool(typeof src.tip_enabled === "string" ? src.tip_enabled : "", fallback.tip_enabled);
+
+  return {
+    monitored_sites: sanitizeMonitoredSites(src.monitored_sites, env.API_URL ?? "") || fallback.monitored_sites,
+    tip_enabled: tipEnabled,
+    tip_img_1:
+      typeof src.tip_img_1 === "string" && src.tip_img_1.trim() ? src.tip_img_1.trim() : fallback.tip_img_1,
+    tip_img_2:
+      typeof src.tip_img_2 === "string" && src.tip_img_2.trim() ? src.tip_img_2.trim() : fallback.tip_img_2,
+    sponsors: sanitizeSponsors(src.sponsors),
+  };
+}
+
+async function getStoredAdminSettings(env) {
+  if (!env.STATUS_KV) return null;
+  return await env.STATUS_KV.get(ADMIN_SETTINGS_KV_KEY, { type: "json" });
+}
+
+async function getResolvedSettings(env) {
+  const defaults = buildDefaultSettings(env);
+  defaults.sponsors = await enrichSponsorsWithQqProfile(defaults.sponsors);
+  const stored = await getStoredAdminSettings(env);
+  if (!stored) return defaults;
+  const sanitized = sanitizeSettings(stored, env, defaults);
+  sanitized.sponsors = await enrichSponsorsWithQqProfile(sanitized.sponsors);
+  if (!sanitized.monitored_sites.length) sanitized.monitored_sites = defaults.monitored_sites;
+  return sanitized;
+}
+
+async function assertAdmin(request, env) {
+  const pass = request.headers.get("X-Admin-Password") ?? "";
+  if (pass === getAdminPassword(env)) return null;
+  return json({ error: "unauthorized", message: "管理员认证失败。" }, 401);
+}
+
+async function handleAdminLogin(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  const body = await request.json().catch(() => null);
+  const input = typeof body?.password === "string" ? body.password.trim() : "";
+  if (!input) return json({ error: "bad_request", message: "密码不能为空。" }, 400);
+  if (input !== getAdminPassword(env)) return json({ error: "unauthorized", message: "密码错误。" }, 401);
+  return json({ ok: true });
+}
+
+async function handleAdminSettings(request, env) {
+  if (!env.STATUS_KV) {
+    return json({ error: "server_misconfig", message: "STATUS_KV is not bound." }, 500);
+  }
+
+  const authError = await assertAdmin(request, env);
+  if (authError) return authError;
+
+  if (request.method === "GET") {
+    const settings = await getResolvedSettings(env);
+    return json({ settings });
+  }
+
+  if (request.method === "PUT") {
+    const body = await request.json().catch(() => null);
+    const defaults = buildDefaultSettings(env);
+    const settings = sanitizeSettings(body, env, defaults);
+    settings.sponsors = await enrichSponsorsWithQqProfile(settings.sponsors);
+    if (!settings.monitored_sites.length) {
+      return json({ error: "bad_request", message: "至少保留一个监控网站。" }, 400);
+    }
+    await env.STATUS_KV.put(ADMIN_SETTINGS_KV_KEY, JSON.stringify(settings));
+    return json({ ok: true, settings });
+  }
+
+  return json({ error: "method_not_allowed" }, 405);
+}
+
+async function unknownSitesPayload(env) {
+  const sites = (await resolveMonitoredSites(env)).map((s) => ({
     name: s.name,
     url: s.url,
     status: "unknown",
@@ -948,7 +1765,7 @@ async function handleHealthCheck(request, env) {
 
   if (!refresh) {
     if (existing) return json(existing);
-    return json(unknownSitesPayload(env));
+    return json(await unknownSitesPayload(env));
   }
 
   if (existing?.last_checked) {
@@ -959,10 +1776,10 @@ async function handleHealthCheck(request, env) {
   const payload = await runStatusCheck(env);
   if (payload) return json(payload);
   if (existing) return json(existing);
-  return json(unknownSitesPayload(env));
+  return json(await unknownSitesPayload(env));
 }
 
-function resolveMonitoredSites(env) {
+function parseMonitoredSitesRaw(env) {
   const raw = env.MONITORED_SITES_JSON ?? env.MONITORED_SITES ?? "";
   const apiUrl = env.API_URL ?? "";
 
@@ -992,10 +1809,17 @@ function resolveMonitoredSites(env) {
   }
 }
 
+async function resolveMonitoredSites(env) {
+  const settings = await getResolvedSettings(env);
+  const sites = sanitizeMonitoredSites(settings?.monitored_sites, env.API_URL ?? "");
+  if (sites.length) return sites;
+  return parseMonitoredSitesRaw(env);
+}
+
 async function runStatusCheck(env) {
   if (!env.STATUS_KV) return null;
 
-  const sites = resolveMonitoredSites(env);
+  const sites = await resolveMonitoredSites(env);
   const startedAt = Date.now();
   const results = await Promise.allSettled(sites.map((s) => checkSite(s)));
   const sitesOut = results.map((r, i) => {
