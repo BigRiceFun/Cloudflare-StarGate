@@ -37,6 +37,7 @@ async function route(request, env, _ctx) {
   if (path === "/api/health-check") return handleHealthCheck(request, env);
   if (path === "/api/admin/login") return handleAdminLogin(request, env);
   if (path === "/api/admin/settings") return handleAdminSettings(request, env);
+  if (path === "/api/admin/settings/reset") return handleAdminSettingsReset(request, env);
 
   return new Response("Not Found", { status: 404 });
 }
@@ -944,7 +945,9 @@ async function handleAdminPage(env) {
 
       <div class="row" style="margin-top:16px;">
         <button class="btn" id="saveBtn" type="button">保存全部配置</button>
+        <button class="btn secondary" id="resetSitesBtn" type="button">重置监控地址为环境变量</button>
       </div>
+      <div class="muted" id="settingsSource" style="margin-top:8px;"></div>
       <div class="msg" id="msg"></div>
     </div>
 
@@ -973,6 +976,8 @@ async function handleAdminPage(env) {
       const sponsorNicknameInput = document.getElementById('sponsorNicknameInput');
       const addSponsorBtn = document.getElementById('addSponsorBtn');
       const saveBtn = document.getElementById('saveBtn');
+      const resetSitesBtn = document.getElementById('resetSitesBtn');
+      const settingsSourceEl = document.getElementById('settingsSource');
       const msgEl = document.getElementById('msg');
       const logoutBtn = document.getElementById('logoutBtn');
       const loginWrap = document.getElementById('loginWrap');
@@ -1051,9 +1056,16 @@ async function handleAdminPage(env) {
         renderSponsors();
       }
 
+      function renderSource(source) {
+        if (!settingsSourceEl) return;
+        const s = source === 'kv' ? 'KV（后台配置）' : '环境变量（MONITORED_SITES_JSON）';
+        settingsSourceEl.textContent = '当前来源：' + s;
+      }
+
       async function loadSettings() {
         const data = await api('/api/admin/settings', { method: 'GET' });
         settings = data.settings || settings;
+        renderSource(data.source);
         renderAll();
       }
 
@@ -1107,11 +1119,21 @@ async function handleAdminPage(env) {
         window.location.href = '/';
       });
 
-      siteListEl.addEventListener('click', (e) => {
+      siteListEl.addEventListener('click', async (e) => {
         const idx = Number(e.target && e.target.dataset ? e.target.dataset.siteDel : NaN);
         if (!Number.isFinite(idx)) return;
+        const prev = Array.isArray(settings.monitored_sites) ? settings.monitored_sites.slice() : [];
         settings.monitored_sites.splice(idx, 1);
         renderSites();
+        setMsg('保存中...', false);
+        try {
+          await saveSettings();
+          setMsg('已保存', false);
+        } catch (err) {
+          settings.monitored_sites = prev;
+          renderSites();
+          setMsg(err && err.message ? err.message : String(err), true);
+        }
       });
       sponsorListEl.addEventListener('click', (e) => {
         const idx = Number(e.target && e.target.dataset ? e.target.dataset.sponsorDel : NaN);
@@ -1149,11 +1171,28 @@ async function handleAdminPage(env) {
         setMsg('保存中...', false);
         try {
           await saveSettings();
+          renderSource('kv');
           setMsg('保存成功', false);
         } catch (e) {
           setMsg(e.message || String(e), true);
         } finally {
           saveBtn.disabled = false;
+        }
+      });
+
+      resetSitesBtn.addEventListener('click', async () => {
+        resetSitesBtn.disabled = true;
+        setMsg('重置中...', false);
+        try {
+          const data = await api('/api/admin/settings/reset', { method: 'POST' });
+          settings = data.settings || settings;
+          renderSource(data.source);
+          renderAll();
+          setMsg('已重置为环境变量', false);
+        } catch (e) {
+          setMsg(e.message || String(e), true);
+        } finally {
+          resetSitesBtn.disabled = false;
         }
       });
 
@@ -1721,7 +1760,8 @@ async function handleAdminSettings(request, env) {
 
   if (request.method === "GET") {
     const settings = await getResolvedSettings(env);
-    return json({ settings });
+    const stored = await getStoredAdminSettings(env);
+    return json({ settings, source: stored ? "kv" : "env" });
   }
 
   if (request.method === "PUT") {
@@ -1733,10 +1773,38 @@ async function handleAdminSettings(request, env) {
       return json({ error: "bad_request", message: "至少保留一个监控网站。" }, 400);
     }
     await env.STATUS_KV.put(ADMIN_SETTINGS_KV_KEY, JSON.stringify(settings));
+    // Clear cached health results so homepage reflects latest site list immediately.
+    await env.STATUS_KV.delete(STATUS_KV_KEY);
     return json({ ok: true, settings });
   }
 
   return json({ error: "method_not_allowed" }, 405);
+}
+
+async function handleAdminSettingsReset(request, env) {
+  if (!env.STATUS_KV) {
+    return json({ error: "server_misconfig", message: "STATUS_KV is not bound." }, 500);
+  }
+
+  const authError = await assertAdmin(request, env);
+  if (authError) return authError;
+
+  if (request.method !== "POST") {
+    return json({ error: "method_not_allowed" }, 405);
+  }
+
+  const defaults = buildDefaultSettings(env);
+  const settings = {
+    monitored_sites: sanitizeMonitoredSites(defaults.monitored_sites, env.API_URL ?? ""),
+    tip_enabled: defaults.tip_enabled,
+    tip_img_1: defaults.tip_img_1,
+    tip_img_2: defaults.tip_img_2,
+    sponsors: await enrichSponsorsWithQqProfile(defaults.sponsors),
+  };
+
+  await env.STATUS_KV.put(ADMIN_SETTINGS_KV_KEY, JSON.stringify(settings));
+  await env.STATUS_KV.delete(STATUS_KV_KEY);
+  return json({ ok: true, settings, source: "kv" });
 }
 
 async function unknownSitesPayload(env) {
